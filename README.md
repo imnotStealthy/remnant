@@ -4,7 +4,7 @@
 
 No install. No server. No CLI. Just Markdown.
 
-Remnant is a session memory protocol for AI coding agents. One ignored file, `REMNANT.md`, lets Claude Code, Codex, Gemini CLI, or Antigravity resume a session without asking you to re-explain the project.
+Remnant is a session memory protocol for AI coding agents. One ignored file, `REMNANT.md`, lets Claude Code, Codex, Gemini CLI, Antigravity — or any LLM that can read a file — resume a session without asking you to re-explain the project.
 
 ## How It Works
 
@@ -12,26 +12,35 @@ The agent reads `REMNANT.md` at startup and writes a compact handoff before endi
 
 ```text
 REMNANT.md
-|-- Session   date, agent, duration
-|-- History   one-line summaries of previous sessions (max 5)
-|-- Done      completed work this session
-|-- Failed    failed attempts and reason
-|-- State     current project state and important files
-|-- Next      exact next step
-`-- Blockers  unresolved questions or dependencies
+|-- Session    date, agent, duration, schema version
+|-- History    one-line summaries of previous sessions (max 5)
+|-- Done       completed work this session
+|-- Failed     failed attempts and reason
+|-- State      current project state (snapshot, replaced each session)
+|-- Next       exact next step
+|-- Blockers   unresolved questions or dependencies
+|-- Decisions  durable: date — decision — why (append-only)
+`-- Map        durable: key files and their roles
 ```
 
-The file is human-readable. Agents use it as a context map, not as full chat history.
+Two kinds of memory:
+
+- **Ephemeral** (`Session` → `Blockers`) — the handoff. Rotates each session; old `Done` rolls into `History`.
+- **Durable** (`Decisions`, `Map`) — the project's long-term memory. Decisions and the file map survive every session and never get compressed away.
+
+The file starts with an embedded agent protocol comment, so it is **self-describing**: any LLM that opens it — even one with no Remnant instruction file — learns the read/update rules from the file itself.
 
 ## Setup
 
-**1. Copy the instruction file for your agent into your project root:**
+**1. Copy the instruction files into your project root:**
 
-| Agent | File |
-|-------|------|
-| Claude Code | `CLAUDE.md` |
-| Codex / Antigravity | `AGENTS.md` |
-| Gemini CLI | `GEMINI.md` |
+| File | Read by |
+|------|---------|
+| `AGENTS.md` | Codex, Antigravity, Cursor, Zed — canonical rules |
+| `CLAUDE.md` | Claude Code (pointer to `AGENTS.md`) |
+| `GEMINI.md` | Gemini CLI (pointer to `AGENTS.md`) |
+
+`AGENTS.md` holds the full rules; the others are two-line pointers, so the rules can never drift between agents. Tools that read none of these still work via the protocol banner inside `REMNANT.md`.
 
 **2. Copy `REMNANT.template.md` into your project root.**
 
@@ -66,41 +75,52 @@ The agent writes a summary, not a transcript. It captures only what a new agent 
 
 ## Agent Rules
 
+Full rules live in `AGENTS.md`. Summary:
+
 ### Startup
 
 1. Look for `REMNANT.md` in the project root.
 2. If it exists, read it before touching any files.
 3. If it is missing, create it from `REMNANT.template.md`.
-4. If both are missing, create `REMNANT.md` using the schema below.
-5. Read only files needed for the current `## Next` task.
+4. If the `Session` date is older than the latest git commit, trust `git log` over `State`.
+5. Use `Map` to locate key files instead of re-exploring the repo; read only files needed for `## Next`.
 
 ### Shutdown
 
 Before the final response, update `REMNANT.md`:
 
 ```text
-History   roll previous Done into one line (keep last 5, drop oldest)
-Done      this session's completed work only — fresh each session
-Failed    failed attempts and reason
-State     current project state as a snapshot — replace, do not append
-Next      exact next task for a new context
-Blockers  unresolved decisions or dependencies
+History    roll previous Done into one tagged line (keep last 5)
+Done       this session's completed work only — fresh each session
+Failed     failed attempts and reason
+State      snapshot, max 6 bullets — replace, do not append
+Next       exact next task for a new context
+Blockers   unresolved decisions or dependencies
+Decisions  append "date — decision — why" — never rewrite or drop
+Map        add/correct key files touched this session
 ```
+
+Keep the whole file under ~150 lines; compress ephemeral sections first, never `Decisions`.
 
 ## Example
 
-A compressed handoff after multiple sessions:
+A handoff after multiple sessions:
 
 ```markdown
+<!-- AGENT PROTOCOL: read this file fully before touching code.
+     Before your final response: update Done/Failed/State/Next/Blockers,
+     roll Done into History (keep 5), append decisions to Decisions.
+     Never commit this file. -->
 # Remnant - remnant
 
 ## Session
+- version: 2
 - date: 2026-05-05T14:00:00Z
 - agent: claude-code
 - duration: 30
 
 ## History
-- 2026-05-04 (codex, 90m): repositioned as Markdown-only protocol, removed CLI and install scripts
+- [pivot] 2026-05-04 (codex, 90m): repositioned as Markdown-only protocol, removed CLI
 
 ## Done
 - Improved compression rule in agent files.
@@ -118,36 +138,18 @@ A compressed handoff after multiple sessions:
 
 ## Blockers
 - None.
+
+## Decisions
+- 2026-05-04 — Markdown-only, no CLI — zero-install is the core value proposition.
+
+## Map
+- AGENTS.md — canonical agent rules
+- README.md — user-facing docs
 ```
 
 ## Schema
 
-```markdown
-# Remnant - <project-name>
-
-## Session
-- date: <ISO 8601>
-- agent: <claude-code | codex | gemini-cli | antigravity | other>
-- duration: <minutes>
-
-## History
-- <one-line summary per previous session — oldest first, max 5 — or "None">
-
-## Done
-- <completed work — this session only>
-
-## Failed
-- <failed attempt and reason>
-
-## State
-- <current state as a snapshot — replace each session>
-
-## Next
-- <exact next step>
-
-## Blockers
-- <open question or dependency>
-```
+See the full schema in `AGENTS.md` or `REMNANT.template.md`. A `REMNANT.md` without `version:` or without `Decisions`/`Map` is schema v1; agents migrate it by adding the missing sections and keeping all content.
 
 ## Security
 
@@ -169,9 +171,9 @@ Never write:
 ## Files
 
 ```text
-AGENTS.md            Codex and Google Antigravity instructions
-CLAUDE.md            Claude Code instructions
-GEMINI.md            Gemini CLI instructions
+AGENTS.md            canonical agent rules
+CLAUDE.md            Claude Code pointer to AGENTS.md
+GEMINI.md            Gemini CLI pointer to AGENTS.md
 REMNANT.template.md  safe template to commit
 REMNANT.md           local-only memory, ignored by Git
 ```
